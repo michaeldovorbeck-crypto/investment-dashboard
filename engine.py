@@ -5,7 +5,6 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-from engine import screen_universe
 from universe_us import get_sp500_universe
 
 st.set_page_config(page_title="Investment Dashboard", layout="wide")
