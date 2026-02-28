@@ -1,124 +1,187 @@
-import numpy as np
+import os
+from datetime import datetime, timezone
+
 import pandas as pd
+import streamlit as st
 import yfinance as yf
 
-RSI_BUY_LOW = 35
-RSI_BUY_HIGH = 50
-RSI_TAKE_PROFIT = 70
+from engine import screen_universe
+from universe_us import get_sp500_universe
 
-def download_close(tickers, period="2y"):
-    px = yf.download(tickers, period=period, auto_adjust=True, progress=False)["Close"]
+st.set_page_config(page_title="Investment Dashboard", layout="wide")
+st.title("📊 Investment Dashboard (EU + US + Tema-radar)")
+
+# ---------- Hjælpetekst (altid opdateret + dynamisk top10) ----------
+def help_box(top_df: pd.DataFrame, label: str):
+    with st.sidebar.expander("🧭 Hjælp: hvad ser jeg?", expanded=True):
+        st.markdown(f"""
+**Formål**
+- Dashboardet scanner markeder og viser en **shortlist** (Top 10/Top N) af tekniske setups.
+- Det er **ikke finansiel rådgivning** — brug det som input til din egen beslutning.
+
+**Kolonner**
+- **Score (0–100)**: samlet styrke (trend + momentum + stabilitet)
+- **A_Risk**: ✅ OK | ⚠️ stigende risiko | 🚨 høj risiko (trend-brud / stort drawdown)
+- **B_Buy**: 🟢 Buy-early zone (trend OK + RSI i buy-range og stigende) | ❌ ellers
+- **C_Timing**: 🔵 hold/add | 🟡 take-profit watch | 🔴 exit-risk
+- **RSI**: momentum (over 70 = ofte “varm”, under ~50 = ofte “kold/tilbagefald”)
+
+**Sådan bruger du Top-listen**
+1) Kig på **B_Buy = 🟢** først (entry-zoner).
+2) Undgå/skriv dig bag øret hvis **A_Risk = 🚨**.
+3) Brug grafen til at bekræfte trend og støtte/modstand.
+""")
+        st.caption(f"Opdateret: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+        if top_df is not None and not top_df.empty:
+            st.markdown(f"### ⭐ {label} – kandidater værd at se nærmere på")
+            for i, r in top_df.reset_index(drop=True).head(10).iterrows():
+                navn = r.get("Navn", "")
+                st.markdown(f"**{i+1}. {r['Ticker']}** {('— ' + navn) if navn else ''}  \nScore **{r['Score']}** — {r.get('Hvorfor','')}")
+
+# ---------- Universe loaders ----------
+def load_csv_universe(path):
+    if not os.path.exists(path):
+        return pd.DataFrame(columns=["ticker", "name"])
+    df = pd.read_csv(path)
+    # accept both "name" or "Navn"
+    if "ticker" not in df.columns:
+        return pd.DataFrame(columns=["ticker", "name"])
+    if "name" not in df.columns and "Navn" in df.columns:
+        df = df.rename(columns={"Navn": "name"})
+    if "name" not in df.columns:
+        df["name"] = ""
+    return df[["ticker", "name"]]
+
+@st.cache_data(ttl=6*3600)
+def load_sp500_cached():
+    return get_sp500_universe()
+
+# ---------- Tema/forecast radar ----------
+THEME_ETFS = pd.DataFrame([
+    # Tema, ETF proxy
+    ("AI & Software", "QQQ"),
+    ("Semiconductors", "SOXX"),
+    ("Elektrificering & batterier", "LIT"),
+    ("Grøn energi", "ICLN"),
+    ("Solenergi", "TAN"),
+    ("Defense/Aerospace", "ITA"),
+    ("Robotics/Automation", "BOTZ"),
+    ("Space", "ARKX"),
+    ("Cybersecurity", "HACK"),
+], columns=["Tema", "Ticker"])
+
+def theme_radar():
+    base = "SPY"
+    tickers = [base] + THEME_ETFS["Ticker"].tolist()
+    px = yf.download(tickers, period="1y", auto_adjust=True, progress=False)["Close"]
     if isinstance(px, pd.Series):
         px = px.to_frame()
-    return px.dropna(how="all")
+    px = px.dropna()
 
-def rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.clip(lower=0).rolling(period).mean()
-    loss = (-delta.clip(upper=0)).rolling(period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
-
-def compute_signals(close_series: pd.Series):
-    close = close_series.dropna()
-    if len(close) < 220:
-        return None
-
-    ma50 = close.rolling(50).mean()
-    ma200 = close.rolling(200).mean()
-    r = rsi(close)
-
-    trend_up = ma50.iloc[-1] > ma200.iloc[-1]
-    rsi_now = float(r.iloc[-1])
-    rsi_prev = float(r.iloc[-6]) if len(r) > 6 else np.nan
-
-    vol = float(close.pct_change().rolling(20).std().iloc[-1] * 100)
-    dd = float((close.iloc[-1] / close.rolling(63).max().iloc[-1]) - 1)
-
-    if (not trend_up) or (dd < -0.15):
-        A = "🚨"
-    elif vol > 5:
-        A = "⚠️"
-    else:
-        A = "✅"
-
-    buy_early = trend_up and (RSI_BUY_LOW < rsi_now < RSI_BUY_HIGH) and (np.isfinite(rsi_prev) and rsi_now > rsi_prev)
-    B = "🟢" if buy_early else "❌"
-
-    if rsi_now > RSI_TAKE_PROFIT:
-        C = "🟡 TAKE_PROFIT"
-    elif not trend_up:
-        C = "🔴 EXIT_RISK"
-    else:
-        C = "🔵 HOLD/ADD"
-
-    trend_score = 50 if trend_up else 15
-    mom_score = max(0, 30 - abs(rsi_now - 55))
-    stab_score = max(0, 20 - vol)
-    score = float(trend_score + mom_score + stab_score)
-
-    return {
-        "Score": round(score, 1),
-        "RSI": round(rsi_now, 1),
-        "Vol20": round(vol, 2),
-        "Drawdown3M": round(dd, 3),
-        "TrendUp": bool(trend_up),
-        "A_Risk": A,
-        "B_Buy": B,
-        "C_Timing": C,
-        "Last": round(float(close.iloc[-1]), 2),
-    }
-
-def screen_universe(df_universe: pd.DataFrame, top_n=10):
-    """
-    df_universe skal have kolonner: ticker, name (name kan være tom)
-    Returnerer top_n med signaler + name.
-    """
-    if df_universe is None or df_universe.empty:
+    if base not in px.columns or len(px) < 60:
         return pd.DataFrame()
 
-    u = df_universe.copy()
-    u["ticker"] = u["ticker"].astype(str).str.upper().str.strip()
-    if "name" not in u.columns:
-        u["name"] = ""
+    def ret(days):
+        return px.pct_change(days).iloc[-1]
 
-    u = u.dropna(subset=["ticker"])
-    u = u[u["ticker"] != ""].drop_duplicates(subset=["ticker"])
+    out = []
+    spy_1m = ret(21).get(base, 0)
+    spy_3m = ret(63).get(base, 0)
 
-    tickers = u["ticker"].tolist()
-    close = download_close(tickers, period="2y")
-
-    rows = []
-    for _, row in u.iterrows():
-        t = row["ticker"]
-        name = row.get("name", "")
-
-        if t not in close.columns:
+    for _, r in THEME_ETFS.iterrows():
+        t = r["Ticker"]
+        if t not in px.columns:
             continue
+        rs_1m = float(ret(21).get(t, 0) - spy_1m)
+        rs_3m = float(ret(63).get(t, 0) - spy_3m)
 
-        sig = compute_signals(close[t])
-        if sig is None:
-            continue
+        # simpel “forecast”: temaer med stigende relativ styrke
+        score = 60*rs_3m + 40*rs_1m
+        out.append([r["Tema"], t, score, rs_1m, rs_3m])
 
-        reasons = []
-        if sig["B_Buy"].startswith("🟢"):
-            reasons.append("Buy-early: trend OK + RSI i buy-range og stigende")
-        if sig["C_Timing"].startswith("🟡"):
-            reasons.append("Take profit: RSI høj")
-        if sig["A_Risk"] in ["⚠️", "🚨"]:
-            reasons.append("Risiko: vol/drawdown/trend-brud")
+    df = pd.DataFrame(out, columns=["Tema","Ticker","MomentumScore","RS_1M_vs_SPY","RS_3M_vs_SPY"])
+    return df.sort_values("MomentumScore", ascending=False)
 
-        rows.append({
-            "Ticker": t,
-            "Navn": name,
-            **sig,
-            "Hvorfor": " | ".join(reasons) if reasons else "Stærkt setup (score)"
-        })
+# ---------- UI ----------
+st.sidebar.header("Indstillinger")
+top_n = st.sidebar.slider("Top N", 5, 30, 10)
 
-    out = pd.DataFrame(rows)
-    if out.empty:
-        return out
+tabs = st.tabs(["🇪🇺 Europa screener", "🇺🇸 USA (S&P 500) screener", "🔎 Vælg aktie & graf", "🧭 Tema/forecast"])
 
-    out["BuyFlag"] = out["B_Buy"].astype(str).str.startswith("🟢")
-    out = out.sort_values(["BuyFlag", "Score"], ascending=[False, False]).drop(columns=["BuyFlag"])
-    return out.head(top_n)
+# ----- Europa -----
+with tabs[0]:
+    st.subheader("Europa-univers (STOXX600 + ekstra SE/DE/DK)")
+    eu1 = load_csv_universe("data/stoxx600.csv")
+    eu2 = load_csv_universe("data/extra_se_de_dk.csv")
+    eu = pd.concat([eu1, eu2], ignore_index=True).drop_duplicates(subset=["ticker"])
+    st.write(f"Antal aktier i EU-univers: **{len(eu)}** (du kan udvide stoxx600.csv over tid)")
+
+    with st.spinner("Scanner Europa..."):
+        eu_top = screen_universe(eu, top_n=top_n)
+
+    help_box(eu_top, "Europa Top-liste")
+
+    st.dataframe(eu_top, use_container_width=True)
+
+    st.subheader("Graf")
+    if not eu_top.empty:
+        pick = st.selectbox("Vælg kandidat", eu_top["Ticker"].tolist(), key="eu_pick")
+        px = yf.download(pick, period="1y", auto_adjust=True, progress=False)
+        st.line_chart(px["Close"])
+    else:
+        st.info("Ingen resultater endnu — tjek tickers i CSV-filerne.")
+
+# ----- USA S&P 500 -----
+with tabs[1]:
+    st.subheader("USA – S&P 500 (alle)")
+    st.caption("Listen hentes automatisk og caches i 6 timer.")
+    sp500 = load_sp500_cached()
+    st.write(f"S&P 500 aktier loaded: **{len(sp500)}**")
+
+    # For at undgå at den kører konstant: knap til at starte scan
+    run_scan = st.button("Kør S&P 500 scan (kan tage lidt tid)")
+    if run_scan:
+        with st.spinner("Scanner S&P 500... (første gang kan tage et par minutter)"):
+            us_top = screen_universe(sp500, top_n=top_n)
+
+        help_box(us_top, "USA Top-liste")
+
+        st.dataframe(us_top, use_container_width=True)
+
+        st.subheader("Graf")
+        if not us_top.empty:
+            pick = st.selectbox("Vælg kandidat", us_top["Ticker"].tolist(), key="us_pick")
+            px = yf.download(pick, period="1y", auto_adjust=True, progress=False)
+            st.line_chart(px["Close"])
+
+    st.warning("Tip: S&P500-scan er tungt. Brug knappen, så du ikke triggere den hele tiden.")
+
+# ----- Vælg aktie & graf (ekstra vindue) -----
+with tabs[2]:
+    st.subheader("Vælg hvilken som helst aktie og se graf")
+    st.caption("Skriv ticker (fx NOVO-B.CO, SAP.DE, NVDA, MSFT, ASML.AS)")
+
+    manual = st.text_input("Ticker", value="NVDA")
+    period = st.selectbox("Periode", ["6mo", "1y", "2y", "5y"], index=1)
+
+    px = yf.download(manual.strip().upper(), period=period, auto_adjust=True, progress=False)
+    if px.empty:
+        st.error("Ingen data fundet. Tjek ticker-formatet (Yahoo).")
+    else:
+        st.line_chart(px["Close"])
+
+# ----- Tema/Forecast -----
+with tabs[3]:
+    st.subheader("Tema/forecast radar (hvor roterer momentum hen?)")
+    st.caption("Dette er en teknisk ‘radar’ baseret på tema-ETF’er som proxy. Høj score = relativ styrke vs SPY.")
+
+    radar = theme_radar()
+    if radar.empty:
+        st.warning("Kunne ikke hente data til tema-radar lige nu.")
+    else:
+        st.dataframe(radar, use_container_width=True)
+
+        top_themes = radar.head(5)
+        st.markdown("### 🔥 Mulige områder at undersøge nærmere (teknisk momentum)")
+        for _, r in top_themes.iterrows():
+            st.markdown(f"- **{r['Tema']}** ({r['Ticker']}) — RS 1M: {r['RS_1M_vs_SPY']:.2%}, RS 3M: {r['RS_3M_vs_SPY']:.2%}")
