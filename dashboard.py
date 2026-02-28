@@ -5,7 +5,6 @@ import streamlit as st
 import yfinance as yf
 
 from engine import screen_universe
-from universe_stoxx import get_stoxx600_yahoo_tickers
 
 st.set_page_config(page_title="Europe Screener", layout="wide")
 st.title("📈 Europe Screener (STOXX 600 + SE/DE/DK)")
@@ -21,8 +20,10 @@ def load_csv_tickers(path):
 
 @st.cache_data(ttl=6*3600)
 def load_stoxx600_cached():
-    tickers, source_url = get_stoxx600_yahoo_tickers()
-    return tickers, source_url
+    # Read from local CSV to keep it stable
+    df = pd.read_csv("data/stoxx600.csv")
+    tickers = df["ticker"].dropna().astype(str).tolist() if "ticker" in df.columns else []
+    return tickers, "data/stoxx600.csv"
 
 @st.cache_data(ttl=3600)
 def screen_cached(tickers_tuple, top_n):
