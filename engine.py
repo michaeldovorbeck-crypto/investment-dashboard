@@ -69,31 +69,51 @@ def compute_signals(close_series: pd.Series):
         "Last": round(float(close.iloc[-1]), 2),
     }
 
-def screen_universe(tickers, top_n=10):
-    tickers = [t.strip().upper() for t in tickers if t and isinstance(t, str)]
-    tickers = sorted(set(tickers))
-    if not tickers:
+def screen_universe(df_universe: pd.DataFrame, top_n=10):
+    """
+    df_universe skal have kolonner: ticker, name (name kan være tom)
+    Returnerer top_n med signaler + name.
+    """
+    if df_universe is None or df_universe.empty:
         return pd.DataFrame()
 
+    u = df_universe.copy()
+    u["ticker"] = u["ticker"].astype(str).str.upper().str.strip()
+    if "name" not in u.columns:
+        u["name"] = ""
+
+    u = u.dropna(subset=["ticker"])
+    u = u[u["ticker"] != ""].drop_duplicates(subset=["ticker"])
+
+    tickers = u["ticker"].tolist()
     close = download_close(tickers, period="2y")
 
     rows = []
-    for t in tickers:
+    for _, row in u.iterrows():
+        t = row["ticker"]
+        name = row.get("name", "")
+
         if t not in close.columns:
             continue
+
         sig = compute_signals(close[t])
         if sig is None:
             continue
 
         reasons = []
         if sig["B_Buy"].startswith("🟢"):
-            reasons.append("Buy early: trend OK + RSI improving")
+            reasons.append("Buy-early: trend OK + RSI i buy-range og stigende")
         if sig["C_Timing"].startswith("🟡"):
-            reasons.append("Take profit watch: RSI high")
+            reasons.append("Take profit: RSI høj")
         if sig["A_Risk"] in ["⚠️", "🚨"]:
-            reasons.append("Risk: vol/drawdown/trend break")
+            reasons.append("Risiko: vol/drawdown/trend-brud")
 
-        rows.append({"Ticker": t, **sig, "Why": " | ".join(reasons) if reasons else "Strong/OK setup"})
+        rows.append({
+            "Ticker": t,
+            "Navn": name,
+            **sig,
+            "Hvorfor": " | ".join(reasons) if reasons else "Stærkt setup (score)"
+        })
 
     out = pd.DataFrame(rows)
     if out.empty:
