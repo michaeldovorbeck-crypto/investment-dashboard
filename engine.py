@@ -2,16 +2,11 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-# --- Parametre (kan justeres) ---
 RSI_BUY_LOW = 35
 RSI_BUY_HIGH = 50
 RSI_TAKE_PROFIT = 70
 
-
 def download_close(tickers, period="2y") -> pd.DataFrame:
-    """
-    Henter Close-priser for tickers via yfinance og returnerer DataFrame.
-    """
     if not tickers:
         return pd.DataFrame()
 
@@ -22,32 +17,19 @@ def download_close(tickers, period="2y") -> pd.DataFrame:
         progress=False,
     )["Close"]
 
-    # yfinance returnerer Series hvis kun 1 ticker
     if isinstance(px, pd.Series):
         px = px.to_frame()
 
     return px.dropna(how="all")
 
-
 def rsi(series: pd.Series, period: int = 14) -> pd.Series:
-    """
-    Simpel RSI-beregning.
-    """
     delta = series.diff()
     gain = delta.clip(lower=0).rolling(period).mean()
     loss = (-delta.clip(upper=0)).rolling(period).mean()
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-
 def compute_signals(close_series: pd.Series) -> dict | None:
-    """
-    Beregner A/B/C + score baseret på:
-    - MA50 vs MA200 (trend)
-    - RSI (timing)
-    - Volatilitet (20d)
-    - Drawdown (3m)
-    """
     close = close_series.dropna()
     if len(close) < 220:
         return None
@@ -60,13 +42,9 @@ def compute_signals(close_series: pd.Series) -> dict | None:
     rsi_now = float(r.iloc[-1])
     rsi_prev = float(r.iloc[-6]) if len(r) > 6 else np.nan
 
-    # 20d volatilitet i procent
     vol = float(close.pct_change().rolling(20).std().iloc[-1] * 100)
-
-    # 3 måneders drawdown fra 63d high (negativt tal)
     dd = float((close.iloc[-1] / close.rolling(63).max().iloc[-1]) - 1)
 
-    # A: risiko
     if (not trend_up) or (dd < -0.15):
         A = "🚨"
     elif vol > 5:
@@ -74,7 +52,6 @@ def compute_signals(close_series: pd.Series) -> dict | None:
     else:
         A = "✅"
 
-    # B: buy early (trend OK + RSI i buy-range + RSI forbedres)
     buy_early = (
         trend_up
         and (RSI_BUY_LOW < rsi_now < RSI_BUY_HIGH)
@@ -82,7 +59,6 @@ def compute_signals(close_series: pd.Series) -> dict | None:
     )
     B = "🟢" if buy_early else "❌"
 
-    # C: timing
     if rsi_now > RSI_TAKE_PROFIT:
         C = "🟡 TAKE_PROFIT"
     elif not trend_up:
@@ -90,7 +66,6 @@ def compute_signals(close_series: pd.Series) -> dict | None:
     else:
         C = "🔵 HOLD/ADD"
 
-    # Score (0–100-ish): trend + RSI nær 55 + lav vol
     trend_score = 50 if trend_up else 15
     mom_score = max(0, 30 - abs(rsi_now - 55))
     stab_score = max(0, 20 - vol)
@@ -108,11 +83,8 @@ def compute_signals(close_series: pd.Series) -> dict | None:
         "Last": round(float(close.iloc[-1]), 2),
     }
 
-
 def screen_universe(universe, top_n: int = 10) -> pd.DataFrame:
     """
-    Screening/ranking af universe.
-
     universe kan være:
     - DataFrame med kolonner: ticker, name (name valgfri)
     - Liste af tickers: ["SAP.DE", "NOVO-B.CO", ...]
@@ -120,7 +92,7 @@ def screen_universe(universe, top_n: int = 10) -> pd.DataFrame:
     if universe is None:
         return pd.DataFrame()
 
-    # Normalisér til DataFrame
+    # Normaliser input til DataFrame
     if isinstance(universe, list):
         u = pd.DataFrame({"ticker": universe, "name": [""] * len(universe)})
     else:
@@ -158,7 +130,6 @@ def screen_universe(universe, top_n: int = 10) -> pd.DataFrame:
         if sig is None:
             continue
 
-        # Forklaring (dansk)
         reasons = []
         if sig["B_Buy"].startswith("🟢"):
             reasons.append("Buy-early: trend OK + RSI i buy-range og stigende")
@@ -178,8 +149,6 @@ def screen_universe(universe, top_n: int = 10) -> pd.DataFrame:
     if out.empty:
         return out
 
-    # Prioritér Buy-early setups øverst, derefter score
     out["BuyFlag"] = out["B_Buy"].astype(str).str.startswith("🟢")
     out = out.sort_values(["BuyFlag", "Score"], ascending=[False, False]).drop(columns=["BuyFlag"])
-
     return out.head(top_n)
