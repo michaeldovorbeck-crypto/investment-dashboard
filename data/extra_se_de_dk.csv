@@ -1,12 +1,7 @@
-ticker
-NOVO-B.CO
-DSV.CO
-VWS.CO
-COLO-B.CO
-VOLV-B.ST
-ERIC-B.ST
-SAND.ST
-SAP.DE
-SIE.DE
-BMW.DE
-MBG.DE
+ticker,name
+NOVO-B.CO,Novo Nordisk B
+DSV.CO,DSV
+VWS.CO,Vestas
+SAP.DE,SAP
+SIE.DE,Siemens
+VOLV-B.ST,Volvo B
