@@ -35,7 +35,6 @@ def compute_signals(close_series: pd.Series):
     vol = float(close.pct_change().rolling(20).std().iloc[-1] * 100)
     dd = float((close.iloc[-1] / close.rolling(63).max().iloc[-1]) - 1)
 
-    # A: risiko
     if (not trend_up) or (dd < -0.15):
         A = "🚨"
     elif vol > 5:
@@ -43,11 +42,9 @@ def compute_signals(close_series: pd.Series):
     else:
         A = "✅"
 
-    # B: buy early
     buy_early = trend_up and (RSI_BUY_LOW < rsi_now < RSI_BUY_HIGH) and (np.isfinite(rsi_prev) and rsi_now > rsi_prev)
     B = "🟢" if buy_early else "❌"
 
-    # C: timing
     if rsi_now > RSI_TAKE_PROFIT:
         C = "🟡 TAKE_PROFIT"
     elif not trend_up:
@@ -55,7 +52,6 @@ def compute_signals(close_series: pd.Series):
     else:
         C = "🔵 HOLD/ADD"
 
-    # Score 0-100 (simpel momentum + stabilitet)
     trend_score = 50 if trend_up else 15
     mom_score = max(0, 30 - abs(rsi_now - 55))
     stab_score = max(0, 20 - vol)
