@@ -11,13 +11,13 @@ def get_sp500_universe():
     df har kolonner: ticker, name
     Fejler Wikipedia, returneres fallback CSV hvis den findes – ellers tom df.
     """
-    # 1) Prøv Wikipedia
     try:
         r = requests.get(
             WIKI_SP500,
             timeout=20,
             headers={"User-Agent": "Mozilla/5.0"},
         )
+        # ikke raise_for_status() (den crasher Streamlit)
         if r.status_code != 200:
             raise RuntimeError(f"Wikipedia HTTP {r.status_code}")
 
@@ -31,7 +31,6 @@ def get_sp500_universe():
         return out, "S&P500 hentet fra Wikipedia (cachet)."
 
     except Exception as e:
-        # 2) Fallback: lokal CSV (hvis du opretter den)
         if os.path.exists(FALLBACK_CSV):
             df = pd.read_csv(FALLBACK_CSV)
             if "ticker" in df.columns:
@@ -40,6 +39,5 @@ def get_sp500_universe():
                 df = df[["ticker", "name"]].dropna().drop_duplicates(subset=["ticker"])
                 return df, f"S&P500 hentet fra fallback CSV (Wikipedia fejlede: {e})"
 
-        # 3) Returnér tomt resultat i stedet for crash
         empty = pd.DataFrame(columns=["ticker", "name"])
         return empty, f"S&P500 kunne ikke hentes lige nu (Wikipedia fejlede: {e})."
